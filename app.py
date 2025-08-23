@@ -58,11 +58,7 @@ def leaderboard_info():
     if not jwt_token:
         return jsonify({"error": "Failed to generate JWT"}), 500
 
-    # Select endpoint based on rank
-    if rank_type == "cs":
-        url = creds["base_url"] + "/GetClashSquadLeaderboardInfo"
-    else:
-        url = creds["base_url"] + "/GetBattleRoyaleLeaderboardInfo"
+    url = creds["base_url"] + "/Leaderboard"
 
     headers = {
         'X-Unity-Version': '2018.4.11f1',
@@ -85,16 +81,21 @@ def leaderboard_info():
         try:
             leaderboard.ParseFromString(response.content)
         except Exception as e:
-            return jsonify({"error": f"Protobuf parse error: {str(e)}"}), 500
+            return jsonify({
+                "error": f"Protobuf parse error: {str(e)}",
+                "raw_hex": response.content.hex()[:400],
+                "raw_length": len(response.content)
+            }), 500
 
         result = {
             "Credit": "@IndTeamApis",
             "developer": "@Ujjaiwal",
-            "mode": rank_type.upper(),
+            "mode": "BR" if rank_type == "br" else "CS",
             "entries": []
         }
 
-        for entry in leaderboard.entries[:100]:  # Only top 100
+        # Sirf top 100
+        for entry in leaderboard.entries[:100]:
             result["entries"].append({
                 "uid": entry.uid,
                 "nickname": entry.player_info.data.nickname,
@@ -151,7 +152,11 @@ def clan_leaderboard_info():
         try:
             clan_board.ParseFromString(response.content)
         except Exception as e:
-            return jsonify({"error": f"Protobuf parse error: {str(e)}"}), 500
+            return jsonify({
+                "error": f"Protobuf parse error: {str(e)}",
+                "raw_hex": response.content.hex()[:400],
+                "raw_length": len(response.content)
+            }), 500
 
         result = {
             "Credit": "@IndTeamApis",
@@ -160,7 +165,7 @@ def clan_leaderboard_info():
             "entries": []
         }
 
-        for entry in clan_board.entries[:100]:  # Only top 100
+        for entry in clan_board.entries[:100]:
             result["entries"].append({
                 "areaId": entry.area_id,
                 "rank": entry.leaderboard_info.rank,
