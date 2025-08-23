@@ -19,7 +19,6 @@ CREDENTIALS = {
         "password": "BFA0A0D9DF6D4EE1AA92354746475A429D775BCA4D8DD822ECBC6D0BF7B51886",
         "base_url": "https://clientbp.ggblueshark.com"
     },
-    # Add more regions if needed
 }
 
 # JWT generate URL
@@ -70,7 +69,7 @@ def leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
-    # 🎯 Mode ke hisaab se endpoint decide karo
+    # ⚠️ Mode ke hisaab se endpoint
     if rank_type == "cs":
         url = creds["base_url"] + "/GetCsRankLeaderboardInfo"
     else:
@@ -83,7 +82,10 @@ def leaderboard_info():
 
     if response.status_code == 200 and response.content:
         leaderboard = Leaderboard()
-        leaderboard.ParseFromString(response.content)
+        try:
+            leaderboard.ParseFromString(response.content)
+        except Exception as e:
+            return jsonify({"error": f"Protobuf parse error: {str(e)}"}), 500
 
         result = {
             "Credit": "@IndTeamApis",
@@ -92,7 +94,8 @@ def leaderboard_info():
             "entries": []
         }
 
-        for entry in leaderboard.entries:
+        # Sirf top 100 players return karo
+        for entry in leaderboard.entries[:100]:
             result["entries"].append({
                 "uid": entry.uid,
                 "nickname": entry.player_info.data.nickname,
@@ -106,7 +109,13 @@ def leaderboard_info():
 
         return jsonify(result)
     else:
-        return jsonify({"error": "Failed to fetch leaderboard"}), 500
+        # Debugging ke liye error print
+        return jsonify({
+            "error": "Failed to fetch leaderboard",
+            "status_code": response.status_code,
+            "raw_length": len(response.content),
+            "raw_hex": response.content.hex()[:200]  # first 200 chars for debug
+        }), 500
 
 
 if __name__ == "__main__":
