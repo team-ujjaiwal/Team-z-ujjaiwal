@@ -38,8 +38,11 @@ def get_jwt(uid, password):
     try:
         params = {'uid': uid, 'password': password}
         response = requests.get(JWT_URL, params=params, timeout=10)
+        logger.debug(f"JWT Response: {response.status_code}, {response.text}")
         if response.status_code == 200:
-            return response.json().get("token")
+            token = response.json().get("token")
+            logger.debug(f"Generated JWT token: {token}")
+            return token
         else:
             logger.error(f"JWT API returned status {response.status_code}: {response.text}")
     except Exception as e:
@@ -65,6 +68,7 @@ def leaderboard_info():
         return jsonify({"error": "Failed to generate JWT"}), 500
 
     url = creds["base_url"] + "/Leaderboard"
+    logger.debug(f"Target URL: {url}")
 
     headers = {
         'X-Unity-Version': '2018.4.11f1',
@@ -77,65 +81,77 @@ def leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
-    # Prepare request data - try different formats
+    # Try different request formats
     request_data_options = [
         f"type={rank_type.upper()}&area_id=0",
         f"area_id=0&type={rank_type.upper()}",
         f"type={rank_type.upper()}",
+        "area_id=0",
         ""
     ]
     
-    for request_data in request_data_options:
+    for i, request_data in enumerate(request_data_options):
         try:
-            logger.debug(f"Trying request data: '{request_data}'")
+            logger.debug(f"Attempt {i+1}: Trying request data: '{request_data}'")
             response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
-            logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
+            logger.debug(f"Response status: {response.status_code}, content length: {len(response.content)}")
             
-            if response.status_code == 200 and len(response.content) > 0:
-                try:
-                    leaderboard = Leaderboard()
-                    leaderboard.ParseFromString(response.content)
-                    
-                    result = {
-                        "Credit": "@IndTeamApis",
-                        "developer": "@Ujjaiwal",
-                        "mode": "BR" if rank_type == "br" else "CS",
-                        "total_entries": len(leaderboard.entries),
-                        "entries": []
-                    }
-
-                    # Sirf top 100
-                    for entry in leaderboard.entries[:100]:
-                        entry_data = {
-                            "uid": entry.uid,
-                            "score": entry.player_info.score,
+            if response.status_code == 200:
+                if len(response.content) > 0:
+                    try:
+                        leaderboard = Leaderboard()
+                        leaderboard.ParseFromString(response.content)
+                        
+                        result = {
+                            "Credit": "@IndTeamApis",
+                            "developer": "@Ujjaiwal",
+                            "mode": "BR" if rank_type == "br" else "CS",
+                            "total_entries": len(leaderboard.entries),
+                            "entries": []
                         }
-                        
-                        # Add player info if available
-                        if hasattr(entry.player_info, 'data') and entry.player_info.data:
-                            entry_data.update({
-                                "nickname": entry.player_info.data.nickname,
-                                "level": entry.player_info.data.level,
-                                "rank": entry.player_info.data.ranking,
-                                "region": entry.player_info.data.region,
-                                "tier": entry.player_info.data.tier,
-                                "lastLogin": entry.player_info.data.last_login
-                            })
-                        
-                        result["entries"].append(entry_data)
 
-                    return jsonify(result)
-                    
-                except Exception as parse_error:
-                    logger.warning(f"Parse failed with data '{request_data}': {parse_error}")
-                    continue
-                    
+                        for entry in leaderboard.entries[:100]:
+                            entry_data = {
+                                "uid": entry.uid,
+                                "score": entry.player_info.score,
+                            }
+                            
+                            if hasattr(entry.player_info, 'data') and entry.player_info.data:
+                                entry_data.update({
+                                    "nickname": entry.player_info.data.nickname,
+                                    "level": entry.player_info.data.level,
+                                    "rank": entry.player_info.data.ranking,
+                                    "region": entry.player_info.data.region,
+                                    "tier": entry.player_info.data.tier,
+                                    "lastLogin": entry.player_info.data.last_login
+                                })
+                            
+                            result["entries"].append(entry_data)
+
+                        return jsonify(result)
+                        
+                    except Exception as parse_error:
+                        logger.warning(f"Parse failed: {parse_error}")
+                        # Try to see what we got
+                        hex_data = response.content.hex()[:100] if response.content else "EMPTY"
+                        logger.debug(f"Raw response (first 50 bytes hex): {hex_data}")
+                        continue
+                else:
+                    logger.debug("Empty response content received")
+            else:
+                logger.debug(f"Non-200 status: {response.status_code}")
+                
         except Exception as e:
-            logger.error(f"Request error with data '{request_data}': {str(e)}")
+            logger.error(f"Request error: {str(e)}")
             continue
 
     return jsonify({
-        "error": "Failed to fetch leaderboard after trying all request formats", 
+        "error": "Failed to fetch leaderboard after trying all request formats",
+        "debug_info": {
+            "region": region,
+            "jwt_token_generated": bool(jwt_token),
+            "target_url": url
+        },
         "status": 500
     }), 500
 
@@ -158,6 +174,7 @@ def clan_leaderboard_info():
         return jsonify({"error": "Failed to generate JWT"}), 500
 
     url = creds["base_url"] + "/GetClanAreaLeaderboardInfo"
+    logger.debug(f"Clan Target URL: {url}")
 
     headers = {
         'X-Unity-Version': '2018.4.11f1',
@@ -170,56 +187,68 @@ def clan_leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
-    # Try different request data formats
+    # Try different request formats
     request_data_options = [
         "area_id=0",
         "clan_id=0",
+        "area_id=0&clan_id=0",
         ""
     ]
     
-    for request_data in request_data_options:
+    for i, request_data in enumerate(request_data_options):
         try:
-            logger.debug(f"Trying clan request data: '{request_data}'")
+            logger.debug(f"Clan Attempt {i+1}: Trying request data: '{request_data}'")
             response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
-            logger.debug(f"Clan response status: {response.status_code}, length: {len(response.content)}")
+            logger.debug(f"Clan Response status: {response.status_code}, content length: {len(response.content)}")
             
-            if response.status_code == 200 and len(response.content) > 0:
-                try:
-                    clan_board = GetClanAreaLeaderboardInfo()
-                    clan_board.ParseFromString(response.content)
-                    
-                    result = {
-                        "Credit": "@IndTeamApis",
-                        "developer": "@Ujjaiwal",
-                        "mode": "CLAN",
-                        "total_entries": len(clan_board.entries),
-                        "entries": []
-                    }
-
-                    for entry in clan_board.entries[:100]:
-                        entry_data = {
-                            "areaId": entry.area_id,
-                            "rank": entry.leaderboard_info.rank,
+            if response.status_code == 200:
+                if len(response.content) > 0:
+                    try:
+                        clan_board = GetClanAreaLeaderboardInfo()
+                        clan_board.ParseFromString(response.content)
+                        
+                        result = {
+                            "Credit": "@IndTeamApis",
+                            "developer": "@Ujjaiwal",
+                            "mode": "CLAN",
+                            "total_entries": len(clan_board.entries),
+                            "entries": []
                         }
-                        
-                        # Add timestamp if available
-                        if hasattr(entry.leaderboard_info, 'timestamp'):
-                            entry_data["timestamp"] = entry.leaderboard_info.timestamp
-                        
-                        result["entries"].append(entry_data)
 
-                    return jsonify(result)
-                    
-                except Exception as parse_error:
-                    logger.warning(f"Clan parse failed with data '{request_data}': {parse_error}")
-                    continue
-                    
+                        for entry in clan_board.entries[:100]:
+                            entry_data = {
+                                "areaId": entry.area_id,
+                                "rank": entry.leaderboard_info.rank,
+                            }
+                            
+                            if hasattr(entry.leaderboard_info, 'timestamp'):
+                                entry_data["timestamp"] = entry.leaderboard_info.timestamp
+                            
+                            result["entries"].append(entry_data)
+
+                        return jsonify(result)
+                        
+                    except Exception as parse_error:
+                        logger.warning(f"Clan parse failed: {parse_error}")
+                        hex_data = response.content.hex()[:100] if response.content else "EMPTY"
+                        logger.debug(f"Clan raw response (first 50 bytes hex): {hex_data}")
+                        continue
+                else:
+                    logger.debug("Empty clan response content received")
+            else:
+                logger.debug(f"Clan non-200 status: {response.status_code}")
+                
         except Exception as e:
-            logger.error(f"Clan request error with data '{request_data}': {str(e)}")
+            logger.error(f"Clan request error: {str(e)}")
             continue
 
     return jsonify({
-        "error": "Failed to fetch clan leaderboard after trying all request formats", 
+        "error": "Failed to fetch clan leaderboard after trying all request formats",
+        "debug_info": {
+            "region": region,
+            "jwt_token_generated": bool(jwt_token),
+            "target_url": url
+        },
         "status": 500
     }), 500
 
@@ -227,6 +256,22 @@ def clan_leaderboard_info():
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "Server is running"})
+
+
+@app.route('/debug_jwt', methods=['GET'])
+def debug_jwt():
+    region = request.args.get('region', 'IND').upper()
+    creds = CREDENTIALS.get(region)
+    if not creds:
+        return jsonify({"error": f"Unsupported region '{region}'"}), 400
+    
+    jwt_token = get_jwt(creds["uid"], creds["password"])
+    return jsonify({
+        "region": region,
+        "uid": creds["uid"],
+        "jwt_token": jwt_token,
+        "token_generated": bool(jwt_token)
+    })
 
 
 if __name__ == "__main__":
