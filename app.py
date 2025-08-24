@@ -3,7 +3,11 @@ import requests
 from Leaderboard_pb2 import Leaderboard
 from GetClanAreaLeaderboardInfo_pb2 import GetClanAreaLeaderboardInfo
 import urllib3
-import struct
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -33,44 +37,42 @@ API_KEY = "1yearskeysforujjaiwal"
 def get_jwt(uid, password):
     try:
         params = {'uid': uid, 'password': password}
-        response = requests.get(JWT_URL, params=params)
+        response = requests.get(JWT_URL, params=params, timeout=10)
         if response.status_code == 200:
             return response.json().get("token")
+        else:
+            logger.error(f"JWT API returned status {response.status_code}: {response.text}")
     except Exception as e:
-        print(f"Error fetching JWT: {e}")
+        logger.error(f"Error fetching JWT: {e}")
     return None
 
-def decode_protobuf_response(response_content):
-    """Handle potential length-prefixed protobuf responses"""
+def parse_protobuf_response(response_content, proto_class):
+    """Try multiple methods to parse protobuf response"""
     try:
-        # Try to parse directly first
-        return response_content
-    except:
-        # If direct parsing fails, try to handle length-prefixed format
-        try:
-            # Check if response starts with a varint length prefix
-            if len(response_content) > 1:
-                # Try to read the length prefix (varint)
-                length = 0
-                shift = 0
-                index = 0
-                
-                while index < len(response_content):
-                    byte = response_content[index]
-                    index += 1
-                    length |= (byte & 0x7F) << shift
-                    if not (byte & 0x80):
-                        break
-                    shift += 7
-                
-                # If we found a reasonable length, return the remaining bytes
-                if 0 < length <= len(response_content) - index:
-                    return response_content[index:index+length]
-        except:
-            pass
+        # Method 1: Direct parsing
+        proto_obj = proto_class()
+        proto_obj.ParseFromString(response_content)
+        return proto_obj
+    except Exception as e1:
+        logger.warning(f"Direct protobuf parsing failed: {e1}")
         
-        # If all else fails, return original content
-        return response_content
+        try:
+            # Method 2: Try to handle potential length prefix
+            # Protobuf messages are sometimes length-prefixed
+            if len(response_content) > 1:
+                # Try to find the start of the protobuf message
+                # Look for common protobuf field markers
+                for i in range(min(10, len(response_content))):
+                    try:
+                        proto_obj = proto_class()
+                        proto_obj.ParseFromString(response_content[i:])
+                        return proto_obj
+                    except:
+                        continue
+        except Exception as e2:
+            logger.warning(f"Length-prefix parsing failed: {e2}")
+    
+    return None
 
 # ================== PLAYER LEADERBOARD (BR/CS) ==================
 @app.route('/leaderboard_info', methods=['GET'])
@@ -103,49 +105,67 @@ def leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
+    # Prepare request data based on rank type
+    request_data = f"type={rank_type.upper()}&area_id=0".encode('utf-8')
+    
     try:
-        # Add proper request body for leaderboard type
-        request_data = f"type={rank_type.upper()}&area_id=0".encode()
-        response = requests.post(url, headers=headers, data=request_data, verify=False)
+        logger.debug(f"Requesting leaderboard from {url} with data: {request_data}")
+        response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
+        logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
+        
     except Exception as e:
+        logger.error(f"Request error: {str(e)}")
         return jsonify({"error": f"Request error: {str(e)}"}), 500
 
     if response.status_code == 200 and response.content:
-        leaderboard = Leaderboard()
-        try:
-            # Handle potential length-prefixed response
-            processed_content = decode_protobuf_response(response.content)
-            leaderboard.ParseFromString(processed_content)
-        except Exception as e:
+        leaderboard = parse_protobuf_response(response.content, Leaderboard)
+        
+        if not leaderboard:
+            # Try to debug what we received
+            content_start = response.content[:100].hex() if len(response.content) > 0 else "EMPTY"
+            logger.error(f"Failed to parse protobuf response. Content start: {content_start}")
             return jsonify({
-                "error": f"Protobuf parse error: {str(e)}",
-                "raw_hex": response.content.hex()[:400],
-                "raw_length": len(response.content)
+                "error": "Failed to parse leaderboard data",
+                "content_length": len(response.content),
+                "content_start_hex": content_start,
+                "status": response.status_code
             }), 500
 
         result = {
             "Credit": "@IndTeamApis",
             "developer": "@Ujjaiwal",
             "mode": "BR" if rank_type == "br" else "CS",
+            "total_entries": len(leaderboard.entries),
             "entries": []
         }
 
         # Sirf top 100
         for entry in leaderboard.entries[:100]:
-            result["entries"].append({
+            entry_data = {
                 "uid": entry.uid,
-                "nickname": entry.player_info.data.nickname,
-                "level": entry.player_info.data.level,
-                "rank": entry.player_info.data.ranking,
                 "score": entry.player_info.score,
-                "region": entry.player_info.data.region,
-                "tier": entry.player_info.data.tier,
-                "lastLogin": entry.player_info.data.last_login
-            })
+            }
+            
+            # Add player info if available
+            if hasattr(entry.player_info, 'data') and entry.player_info.data:
+                entry_data.update({
+                    "nickname": entry.player_info.data.nickname,
+                    "level": entry.player_info.data.level,
+                    "rank": entry.player_info.data.ranking,
+                    "region": entry.player_info.data.region,
+                    "tier": entry.player_info.data.tier,
+                    "lastLogin": entry.player_info.data.last_login
+                })
+            
+            result["entries"].append(entry_data)
 
         return jsonify(result)
 
-    return jsonify({"error": "Failed to fetch leaderboard", "status": response.status_code}), 500
+    return jsonify({
+        "error": "Failed to fetch leaderboard", 
+        "status": response.status_code,
+        "response_text": response.text[:200] if response.text else "No text response"
+    }), 500
 
 
 # ================== CLAN LEADERBOARD ==================
@@ -178,44 +198,65 @@ def clan_leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
+    # Prepare request data
+    request_data = "area_id=0".encode('utf-8')
+    
     try:
-        # Add proper request body for clan leaderboard
-        request_data = "area_id=0".encode()
-        response = requests.post(url, headers=headers, data=request_data, verify=False)
+        logger.debug(f"Requesting clan leaderboard from {url} with data: {request_data}")
+        response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
+        logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
+        
     except Exception as e:
+        logger.error(f"Request error: {str(e)}")
         return jsonify({"error": f"Request error: {str(e)}"}), 500
 
     if response.status_code == 200 and response.content:
-        clan_board = GetClanAreaLeaderboardInfo()
-        try:
-            # Handle potential length-prefixed response
-            processed_content = decode_protobuf_response(response.content)
-            clan_board.ParseFromString(processed_content)
-        except Exception as e:
+        clan_board = parse_protobuf_response(response.content, GetClanAreaLeaderboardInfo)
+        
+        if not clan_board:
+            # Try to debug what we received
+            content_start = response.content[:100].hex() if len(response.content) > 0 else "EMPTY"
+            logger.error(f"Failed to parse protobuf response. Content start: {content_start}")
             return jsonify({
-                "error": f"Protobuf parse error: {str(e)}",
-                "raw_hex": response.content.hex()[:400],
-                "raw_length": len(response.content)
+                "error": "Failed to parse clan leaderboard data",
+                "content_length": len(response.content),
+                "content_start_hex": content_start,
+                "status": response.status_code
             }), 500
 
         result = {
             "Credit": "@IndTeamApis",
             "developer": "@Ujjaiwal",
             "mode": "CLAN",
+            "total_entries": len(clan_board.entries),
             "entries": []
         }
 
         for entry in clan_board.entries[:100]:
-            result["entries"].append({
+            entry_data = {
                 "areaId": entry.area_id,
                 "rank": entry.leaderboard_info.rank,
-                "timestamp": entry.leaderboard_info.timestamp if entry.leaderboard_info.HasField("timestamp") else None
-            })
+            }
+            
+            # Add timestamp if available
+            if hasattr(entry.leaderboard_info, 'timestamp'):
+                entry_data["timestamp"] = entry.leaderboard_info.timestamp
+            
+            result["entries"].append(entry_data)
 
         return jsonify(result)
 
-    return jsonify({"error": "Failed to fetch clan leaderboard", "status": response.status_code}), 500
+    return jsonify({
+        "error": "Failed to fetch clan leaderboard", 
+        "status": response.status_code,
+        "response_text": response.text[:200] if response.text else "No text response"
+    }), 500
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "message": "Server is running"})
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
