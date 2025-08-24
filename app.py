@@ -46,34 +46,6 @@ def get_jwt(uid, password):
         logger.error(f"Error fetching JWT: {e}")
     return None
 
-def parse_protobuf_response(response_content, proto_class):
-    """Try multiple methods to parse protobuf response"""
-    try:
-        # Method 1: Direct parsing
-        proto_obj = proto_class()
-        proto_obj.ParseFromString(response_content)
-        return proto_obj
-    except Exception as e1:
-        logger.warning(f"Direct protobuf parsing failed: {e1}")
-        
-        try:
-            # Method 2: Try to handle potential length prefix
-            # Protobuf messages are sometimes length-prefixed
-            if len(response_content) > 1:
-                # Try to find the start of the protobuf message
-                # Look for common protobuf field markers
-                for i in range(min(10, len(response_content))):
-                    try:
-                        proto_obj = proto_class()
-                        proto_obj.ParseFromString(response_content[i:])
-                        return proto_obj
-                    except:
-                        continue
-        except Exception as e2:
-            logger.warning(f"Length-prefix parsing failed: {e2}")
-    
-    return None
-
 # ================== PLAYER LEADERBOARD (BR/CS) ==================
 @app.route('/leaderboard_info', methods=['GET'])
 def leaderboard_info():
@@ -105,66 +77,66 @@ def leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
-    # Prepare request data based on rank type
-    request_data = f"type={rank_type.upper()}&area_id=0".encode('utf-8')
+    # Prepare request data - try different formats
+    request_data_options = [
+        f"type={rank_type.upper()}&area_id=0",
+        f"area_id=0&type={rank_type.upper()}",
+        f"type={rank_type.upper()}",
+        ""
+    ]
     
-    try:
-        logger.debug(f"Requesting leaderboard from {url} with data: {request_data}")
-        response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
-        logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
-        
-    except Exception as e:
-        logger.error(f"Request error: {str(e)}")
-        return jsonify({"error": f"Request error: {str(e)}"}), 500
-
-    if response.status_code == 200 and response.content:
-        leaderboard = parse_protobuf_response(response.content, Leaderboard)
-        
-        if not leaderboard:
-            # Try to debug what we received
-            content_start = response.content[:100].hex() if len(response.content) > 0 else "EMPTY"
-            logger.error(f"Failed to parse protobuf response. Content start: {content_start}")
-            return jsonify({
-                "error": "Failed to parse leaderboard data",
-                "content_length": len(response.content),
-                "content_start_hex": content_start,
-                "status": response.status_code
-            }), 500
-
-        result = {
-            "Credit": "@IndTeamApis",
-            "developer": "@Ujjaiwal",
-            "mode": "BR" if rank_type == "br" else "CS",
-            "total_entries": len(leaderboard.entries),
-            "entries": []
-        }
-
-        # Sirf top 100
-        for entry in leaderboard.entries[:100]:
-            entry_data = {
-                "uid": entry.uid,
-                "score": entry.player_info.score,
-            }
+    for request_data in request_data_options:
+        try:
+            logger.debug(f"Trying request data: '{request_data}'")
+            response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
+            logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
             
-            # Add player info if available
-            if hasattr(entry.player_info, 'data') and entry.player_info.data:
-                entry_data.update({
-                    "nickname": entry.player_info.data.nickname,
-                    "level": entry.player_info.data.level,
-                    "rank": entry.player_info.data.ranking,
-                    "region": entry.player_info.data.region,
-                    "tier": entry.player_info.data.tier,
-                    "lastLogin": entry.player_info.data.last_login
-                })
-            
-            result["entries"].append(entry_data)
+            if response.status_code == 200 and len(response.content) > 0:
+                try:
+                    leaderboard = Leaderboard()
+                    leaderboard.ParseFromString(response.content)
+                    
+                    result = {
+                        "Credit": "@IndTeamApis",
+                        "developer": "@Ujjaiwal",
+                        "mode": "BR" if rank_type == "br" else "CS",
+                        "total_entries": len(leaderboard.entries),
+                        "entries": []
+                    }
 
-        return jsonify(result)
+                    # Sirf top 100
+                    for entry in leaderboard.entries[:100]:
+                        entry_data = {
+                            "uid": entry.uid,
+                            "score": entry.player_info.score,
+                        }
+                        
+                        # Add player info if available
+                        if hasattr(entry.player_info, 'data') and entry.player_info.data:
+                            entry_data.update({
+                                "nickname": entry.player_info.data.nickname,
+                                "level": entry.player_info.data.level,
+                                "rank": entry.player_info.data.ranking,
+                                "region": entry.player_info.data.region,
+                                "tier": entry.player_info.data.tier,
+                                "lastLogin": entry.player_info.data.last_login
+                            })
+                        
+                        result["entries"].append(entry_data)
+
+                    return jsonify(result)
+                    
+                except Exception as parse_error:
+                    logger.warning(f"Parse failed with data '{request_data}': {parse_error}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Request error with data '{request_data}': {str(e)}")
+            continue
 
     return jsonify({
-        "error": "Failed to fetch leaderboard", 
-        "status": response.status_code,
-        "response_text": response.text[:200] if response.text else "No text response"
+        "error": "Failed to fetch leaderboard after trying all request formats", 
+        "status": 500
     }), 500
 
 
@@ -198,58 +170,57 @@ def clan_leaderboard_info():
         'Accept-Encoding': 'gzip'
     }
 
-    # Prepare request data
-    request_data = "area_id=0".encode('utf-8')
+    # Try different request data formats
+    request_data_options = [
+        "area_id=0",
+        "clan_id=0",
+        ""
+    ]
     
-    try:
-        logger.debug(f"Requesting clan leaderboard from {url} with data: {request_data}")
-        response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
-        logger.debug(f"Response status: {response.status_code}, length: {len(response.content)}")
-        
-    except Exception as e:
-        logger.error(f"Request error: {str(e)}")
-        return jsonify({"error": f"Request error: {str(e)}"}), 500
-
-    if response.status_code == 200 and response.content:
-        clan_board = parse_protobuf_response(response.content, GetClanAreaLeaderboardInfo)
-        
-        if not clan_board:
-            # Try to debug what we received
-            content_start = response.content[:100].hex() if len(response.content) > 0 else "EMPTY"
-            logger.error(f"Failed to parse protobuf response. Content start: {content_start}")
-            return jsonify({
-                "error": "Failed to parse clan leaderboard data",
-                "content_length": len(response.content),
-                "content_start_hex": content_start,
-                "status": response.status_code
-            }), 500
-
-        result = {
-            "Credit": "@IndTeamApis",
-            "developer": "@Ujjaiwal",
-            "mode": "CLAN",
-            "total_entries": len(clan_board.entries),
-            "entries": []
-        }
-
-        for entry in clan_board.entries[:100]:
-            entry_data = {
-                "areaId": entry.area_id,
-                "rank": entry.leaderboard_info.rank,
-            }
+    for request_data in request_data_options:
+        try:
+            logger.debug(f"Trying clan request data: '{request_data}'")
+            response = requests.post(url, headers=headers, data=request_data, verify=False, timeout=15)
+            logger.debug(f"Clan response status: {response.status_code}, length: {len(response.content)}")
             
-            # Add timestamp if available
-            if hasattr(entry.leaderboard_info, 'timestamp'):
-                entry_data["timestamp"] = entry.leaderboard_info.timestamp
-            
-            result["entries"].append(entry_data)
+            if response.status_code == 200 and len(response.content) > 0:
+                try:
+                    clan_board = GetClanAreaLeaderboardInfo()
+                    clan_board.ParseFromString(response.content)
+                    
+                    result = {
+                        "Credit": "@IndTeamApis",
+                        "developer": "@Ujjaiwal",
+                        "mode": "CLAN",
+                        "total_entries": len(clan_board.entries),
+                        "entries": []
+                    }
 
-        return jsonify(result)
+                    for entry in clan_board.entries[:100]:
+                        entry_data = {
+                            "areaId": entry.area_id,
+                            "rank": entry.leaderboard_info.rank,
+                        }
+                        
+                        # Add timestamp if available
+                        if hasattr(entry.leaderboard_info, 'timestamp'):
+                            entry_data["timestamp"] = entry.leaderboard_info.timestamp
+                        
+                        result["entries"].append(entry_data)
+
+                    return jsonify(result)
+                    
+                except Exception as parse_error:
+                    logger.warning(f"Clan parse failed with data '{request_data}': {parse_error}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Clan request error with data '{request_data}': {str(e)}")
+            continue
 
     return jsonify({
-        "error": "Failed to fetch clan leaderboard", 
-        "status": response.status_code,
-        "response_text": response.text[:200] if response.text else "No text response"
+        "error": "Failed to fetch clan leaderboard after trying all request formats", 
+        "status": 500
     }), 500
 
 
