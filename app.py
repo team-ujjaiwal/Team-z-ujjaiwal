@@ -3,6 +3,7 @@ import requests
 from Leaderboard_pb2 import Leaderboard
 from GetClanAreaLeaderboardInfo_pb2 import GetClanAreaLeaderboardInfo
 import urllib3
+import struct
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -39,6 +40,37 @@ def get_jwt(uid, password):
         print(f"Error fetching JWT: {e}")
     return None
 
+def decode_protobuf_response(response_content):
+    """Handle potential length-prefixed protobuf responses"""
+    try:
+        # Try to parse directly first
+        return response_content
+    except:
+        # If direct parsing fails, try to handle length-prefixed format
+        try:
+            # Check if response starts with a varint length prefix
+            if len(response_content) > 1:
+                # Try to read the length prefix (varint)
+                length = 0
+                shift = 0
+                index = 0
+                
+                while index < len(response_content):
+                    byte = response_content[index]
+                    index += 1
+                    length |= (byte & 0x7F) << shift
+                    if not (byte & 0x80):
+                        break
+                    shift += 7
+                
+                # If we found a reasonable length, return the remaining bytes
+                if 0 < length <= len(response_content) - index:
+                    return response_content[index:index+length]
+        except:
+            pass
+        
+        # If all else fails, return original content
+        return response_content
 
 # ================== PLAYER LEADERBOARD (BR/CS) ==================
 @app.route('/leaderboard_info', methods=['GET'])
@@ -72,14 +104,18 @@ def leaderboard_info():
     }
 
     try:
-        response = requests.post(url, headers=headers, data=b"", verify=False)
+        # Add proper request body for leaderboard type
+        request_data = f"type={rank_type.upper()}&area_id=0".encode()
+        response = requests.post(url, headers=headers, data=request_data, verify=False)
     except Exception as e:
         return jsonify({"error": f"Request error: {str(e)}"}), 500
 
     if response.status_code == 200 and response.content:
         leaderboard = Leaderboard()
         try:
-            leaderboard.ParseFromString(response.content)
+            # Handle potential length-prefixed response
+            processed_content = decode_protobuf_response(response.content)
+            leaderboard.ParseFromString(processed_content)
         except Exception as e:
             return jsonify({
                 "error": f"Protobuf parse error: {str(e)}",
@@ -143,14 +179,18 @@ def clan_leaderboard_info():
     }
 
     try:
-        response = requests.post(url, headers=headers, data=b"", verify=False)
+        # Add proper request body for clan leaderboard
+        request_data = "area_id=0".encode()
+        response = requests.post(url, headers=headers, data=request_data, verify=False)
     except Exception as e:
         return jsonify({"error": f"Request error: {str(e)}"}), 500
 
     if response.status_code == 200 and response.content:
         clan_board = GetClanAreaLeaderboardInfo()
         try:
-            clan_board.ParseFromString(response.content)
+            # Handle potential length-prefixed response
+            processed_content = decode_protobuf_response(response.content)
+            clan_board.ParseFromString(processed_content)
         except Exception as e:
             return jsonify({
                 "error": f"Protobuf parse error: {str(e)}",
